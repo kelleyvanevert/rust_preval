@@ -12,9 +12,9 @@ use nom::{
 };
 
 fn main() {
-    let f = parse_doc("{ let x = 5 * 2; x }").unwrap();
+    let f = parse_doc("{ i = 3; while i { print i; i = i - 1 } }").unwrap();
 
-    println!("Hello, world! {}", f.eval(&mut Default::default()));
+    println!("Result: {}", f.eval(&mut Default::default()));
 }
 
 type Env = FxHashMap<String, i64>;
@@ -27,34 +27,32 @@ impl EvalFn {
         self.0(env)
     }
 
-    fn with_unary_op(self, op: &str) -> EvalFn {
+    fn unary(f: EvalFn, eval: fn(i64) -> i64) -> EvalFn {
+        EvalFn(Rc::new(move |env| eval(f.eval(env))))
+    }
+
+    fn unary_from_op(f: EvalFn, op: &str) -> EvalFn {
         match op {
-            "!" => EvalFn(Rc::new(move |env| {
-                let num = self.eval(env);
-                if num == 0 {
-                    1
-                } else {
-                    0
-                }
-            })),
+            "!" => EvalFn::unary(f, |val| if val == 0 { 1 } else { 0 }),
+            "-" => EvalFn::unary(f, |val| 0 - val),
             _ => unreachable!("unknown op: {}", op),
         }
     }
 
-    fn with_binary_op(self, op: String, rhs: EvalFn) -> EvalFn {
-        EvalFn(Rc::new(move |env| {
-            let le = self.eval(env);
-            let ri = rhs.eval(env);
-            match &op[..] {
-                "*" => le * ri,
-                "/" => le / ri,
-                "%" => le % ri,
-                "+" => le + ri,
-                "-" => le - ri,
-                "<<" => le << ri,
-                _ => unreachable!("unknown op: {}", op),
-            }
-        }))
+    fn binary(lhs: EvalFn, rhs: EvalFn, eval: fn(i64, i64) -> i64) -> EvalFn {
+        EvalFn(Rc::new(move |env| eval(lhs.eval(env), rhs.eval(env))))
+    }
+
+    fn binary_from_op(lhs: EvalFn, op: &str, rhs: EvalFn) -> EvalFn {
+        match op {
+            "*" => EvalFn::binary(lhs, rhs, |le, ri| le * ri),
+            "/" => EvalFn::binary(lhs, rhs, |le, ri| le / ri),
+            "%" => EvalFn::binary(lhs, rhs, |le, ri| le % ri),
+            "+" => EvalFn::binary(lhs, rhs, |le, ri| le + ri),
+            "-" => EvalFn::binary(lhs, rhs, |le, ri| le - ri),
+            "<<" => EvalFn::binary(lhs, rhs, |le, ri| le << ri),
+            _ => unreachable!("unknown op: {}", op),
+        }
     }
 }
 
@@ -133,7 +131,9 @@ fn parse_expr_parenthesized(s: &str) -> IResult<&str, EvalFn> {
 
 fn parse_expr_leaf(s: &str) -> IResult<&str, EvalFn> {
     alt((
-        parse_decl,
+        parse_assign,
+        parse_while,
+        parse_print,
         parse_int,
         parse_var,
         parse_expr_parenthesized,
@@ -147,7 +147,7 @@ fn unary_expr_stack(s: &str) -> IResult<&str, EvalFn> {
         tuple((many0(terminated(tag("!"), multispace0)), parse_expr_leaf)),
         |(ops, mut expr)| {
             for op in ops.into_iter().rev() {
-                expr = expr.with_unary_op(op);
+                expr = EvalFn::unary_from_op(expr, op);
             }
             expr
         },
@@ -168,7 +168,7 @@ fn mul_expr_stack(s: &str) -> IResult<&str, EvalFn> {
         )),
         |(mut expr, ops)| {
             for (_, op, _, right) in ops {
-                expr = expr.with_binary_op(op.to_string(), right);
+                expr = EvalFn::binary_from_op(expr, op, right);
             }
             expr
         },
@@ -189,7 +189,7 @@ fn add_expr_stack(s: &str) -> IResult<&str, EvalFn> {
         )),
         |(mut expr, ops)| {
             for (_, op, _, right) in ops {
-                expr = expr.with_binary_op(op.to_string(), right);
+                expr = EvalFn::binary_from_op(expr, op, right);
             }
             expr
         },
@@ -201,11 +201,9 @@ fn parse_expr(s: &str) -> IResult<&str, EvalFn> {
     add_expr_stack.parse(s)
 }
 
-fn parse_decl(s: &str) -> IResult<&str, EvalFn> {
+fn parse_assign(s: &str) -> IResult<&str, EvalFn> {
     map(
         tuple((
-            tag("let"),
-            multispace1,
             parse_identifier,
             multispace0,
             char('='),
@@ -213,10 +211,47 @@ fn parse_decl(s: &str) -> IResult<&str, EvalFn> {
             parse_expr,
         )),
         |t| {
-            let id = t.2.to_string();
+            let id = t.0.to_string();
             EvalFn(Rc::new(move |env| {
-                let val = t.6.eval(env);
+                let val = t.4.eval(env);
                 env.insert(id.clone(), val);
+                val
+            }))
+        },
+    )
+    .parse(s)
+}
+
+fn parse_while(s: &str) -> IResult<&str, EvalFn> {
+    map(
+        tuple((
+            tag("while"),
+            multispace1,
+            parse_expr,
+            multispace0,
+            parse_block,
+        )),
+        |(_, _, cond, _, body)| {
+            EvalFn(Rc::new(move |env| {
+                while cond.eval(env) != 0 {
+                    body.eval(env);
+                }
+
+                0
+            }))
+        },
+    )
+    .parse(s)
+}
+
+fn parse_print(s: &str) -> IResult<&str, EvalFn> {
+    map(
+        tuple((tag("print"), multispace1, parse_expr)),
+        |(_, _, expr)| {
+            EvalFn(Rc::new(move |env| {
+                let val = expr.eval(env);
+                println!("{}", val);
+
                 val
             }))
         },
