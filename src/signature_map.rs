@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use crate::types::{FnDef, Params};
+use crate::types::{FnBody, Params};
 
 #[derive(Debug, Default)]
 pub struct FnSignatureMap {
@@ -10,7 +10,7 @@ pub struct FnSignatureMap {
 #[derive(Debug)]
 struct MapNode {
     params: Params,
-    def: FnDef,
+    body: FnBody,
 
     // invariant: only one of these will be comparable to the current params
     greater_nodes: Vec<MapNode>,
@@ -43,14 +43,14 @@ fn insert_impl(nodes: &mut Vec<MapNode>, new_node: MapNode) {
     nodes.push(new_node);
 }
 
-fn find_impl(nodes: &Vec<MapNode>, params: Params) -> Option<FnDef> {
+fn find_impl(nodes: &Vec<MapNode>, params: Params) -> Option<FnBody> {
     for node in nodes {
         match params.partial_cmp(&node.params) {
             Some(Ordering::Equal) => {
-                return Some(node.def.clone());
+                return Some(node.body.clone());
             }
             Some(Ordering::Greater) => {
-                return find_impl(&node.greater_nodes, params).or_else(|| Some(node.def.clone()));
+                return find_impl(&node.greater_nodes, params).or_else(|| Some(node.body.clone()));
             }
             Some(Ordering::Less) | None => {
                 continue;
@@ -62,22 +62,18 @@ fn find_impl(nodes: &Vec<MapNode>, params: Params) -> Option<FnDef> {
 }
 
 impl FnSignatureMap {
-    pub fn new() -> FnSignatureMap {
-        FnSignatureMap { roots: vec![] }
-    }
-
-    pub fn insert(&mut self, params: Params, def: FnDef) {
+    pub fn insert(&mut self, params: Params, body: FnBody) {
         insert_impl(
             &mut self.roots,
             MapNode {
                 params,
-                def,
+                body,
                 greater_nodes: vec![],
             },
         );
     }
 
-    pub fn find_best_match(&self, params: Params) -> Option<FnDef> {
+    pub fn find_best_match(&self, params: Params) -> Option<FnBody> {
         find_impl(&self.roots, params)
     }
 }

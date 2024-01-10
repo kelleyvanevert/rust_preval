@@ -3,7 +3,7 @@ use std::{cmp::Ordering, ops::Index, rc::Rc};
 use fxhash::FxHashMap;
 use smallvec::SmallVec;
 
-use crate::signature_map::FnSignatureMap;
+use crate::{signature_map::FnSignatureMap, stdlib::implement_stdlib};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ty {
@@ -90,6 +90,7 @@ impl PartialOrd for Params {
     }
 }
 
+#[allow(unused)]
 #[derive(Debug, Clone, PartialEq, Copy)]
 pub enum StackVal {
     Nil,
@@ -174,12 +175,30 @@ impl StackVal {
             _ => panic!("cannot cast {} as int", self),
         }
     }
+
+    pub fn is_nil(&self) -> bool {
+        match self {
+            StackVal::Nil => true,
+            _ => false,
+        }
+    }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[allow(unused)]
+#[derive(Debug)]
 pub enum HeapVal {
     Str(String),
+    FnDef(FnDef),
     // etc.
+}
+
+impl HeapVal {
+    pub fn as_fn_def_mut(&mut self) -> &mut FnDef {
+        match self {
+            HeapVal::FnDef(def) => def,
+            _ => panic!("cannot cast heap val {:?} as fn def", self),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -188,13 +207,38 @@ pub struct Scope {
     pub values: FxHashMap<String, StackVal>,
 }
 
+#[derive(Debug)]
 pub struct Env {
-    pub ops: FxHashMap<String, FnSignatureMap>,
     pub scopes: Vec<Scope>,
     pub heap: Vec<HeapVal>,
 }
 
-impl Env {}
+impl Env {
+    pub fn add_fn_sig(&mut self, name: &str, params: Params, sig: FnBody) {
+        let loc = match self.scopes[0].values.get(name) {
+            None => {
+                let loc = self.heap.len();
+
+                self.heap.push(HeapVal::FnDef(Default::default()));
+
+                self.scopes[0]
+                    .values
+                    .insert(name.to_string(), StackVal::FnDef { loc });
+
+                loc
+            }
+            Some(stack_val) => match stack_val {
+                StackVal::FnDef { loc } => *loc,
+                _ => panic!("var `{}` isn't a fn", name),
+            },
+        };
+
+        self.heap[loc]
+            .as_fn_def_mut()
+            .signatures
+            .insert(params, sig);
+    }
+}
 
 pub struct Ctx {
     pub env: Env,
@@ -205,12 +249,17 @@ impl Ctx {
     pub fn new() -> Self {
         Ctx {
             env: Env {
-                ops: Default::default(),
                 scopes: vec![Default::default()],
                 heap: vec![],
             },
             current_scope: 0,
         }
+    }
+
+    pub fn with_stdlib() -> Self {
+        let mut ctx = Ctx::new();
+        implement_stdlib(&mut ctx.env);
+        ctx
     }
 
     pub fn get(&self, name: &str) -> Option<StackVal> {
@@ -229,16 +278,27 @@ impl Ctx {
         }
     }
 
-    pub fn call(&mut self, name: &str, args: Args) -> Option<StackVal> {
-        self.env
-            .ops
-            .get(name)
-            .map(|signatures| {
-                let params = args.0.iter().map(|arg| arg.ty()).collect::<Params>();
-                signatures.find_best_match(params)
-            })
-            .flatten()
-            .map(|def| def.eval(self, args))
+    pub fn call(&mut self, stack_val: StackVal, args: Args) -> Option<StackVal> {
+        let StackVal::FnDef { loc } = stack_val else {
+            return None;
+        };
+
+        let HeapVal::FnDef(def) = &self.env.heap[loc] else {
+            return None;
+        };
+
+        let params = args.0.iter().map(|arg| arg.ty()).collect::<Params>();
+
+        let Some(body) = def.signatures.find_best_match(params) else {
+            return None;
+        };
+
+        Some(body.eval(self, args))
+    }
+
+    pub fn call_by_name(&mut self, name: &str, args: Args) -> Option<StackVal> {
+        self.get(name)
+            .and_then(|stack_val| self.call(stack_val, args))
     }
 }
 
@@ -250,72 +310,51 @@ impl Program {
         self.0(ctx)
     }
 
-    fn unary(f: Program, map: fn(StackVal, &mut Ctx) -> StackVal) -> Program {
-        Program(Rc::new(move |ctx| map(f.eval(ctx), ctx)))
-    }
+    // fn unary(f: Program, map: fn(StackVal, &mut Ctx) -> StackVal) -> Program {
+    //     Program(Rc::new(move |ctx| map(f.eval(ctx), ctx)))
+    // }
 
-    fn unary_from_op(f: Program, op: &str) -> Program {
-        match op {
-            "!" => Program::unary(f, |val, _ctx| match val {
-                StackVal::Bool(b) => StackVal::Bool(!b),
-                _ => panic!(),
-            }),
-            "-" => Program::unary(f, |val, _ctx| match val {
-                StackVal::Int(n) => StackVal::Int(0 - n),
-                StackVal::Float(n) => StackVal::Float(0.0 - n),
-                _ => panic!(),
-            }),
-            _ => unreachable!("unknown op: {}", op),
-        }
-    }
-
-    fn binary(
-        lhs: Program,
-        rhs: Program,
-        map: fn(StackVal, StackVal, &mut Ctx) -> StackVal,
-    ) -> Program {
-        Program(Rc::new(move |ctx| map(lhs.eval(ctx), rhs.eval(ctx), ctx)))
-    }
-
-    // fn binary_from_op(lhs: Program, op: &str, rhs: Program) -> Program {
-    //     match op {
-    //         "*" => Program::binary(lhs, rhs, |le, ri, _ctx| le * ri),
-    //         "/" => Program::binary(lhs, rhs, |le, ri, _ctx| le / ri),
-    //         "%" => Program::binary(lhs, rhs, |le, ri, _ctx| le % ri),
-    //         "+" => Program::binary(lhs, rhs, |le, ri, _ctx| le + ri),
-    //         "-" => Program::binary(lhs, rhs, |le, ri, _ctx| le - ri),
-    //         "<<" => Program::binary(lhs, rhs, |le, ri, _ctx| le << ri),
-    //         _ => unreachable!("unknown op: {}", op),
-    //     }
+    // fn binary(
+    //     lhs: Program,
+    //     rhs: Program,
+    //     map: fn(StackVal, StackVal, &mut Ctx) -> StackVal,
+    // ) -> Program {
+    //     Program(Rc::new(move |ctx| map(lhs.eval(ctx), rhs.eval(ctx), ctx)))
     // }
 }
 
 #[derive(Clone)]
-pub struct FnDef(pub Rc<dyn Fn(&mut Ctx, Args) -> StackVal>);
+pub struct FnBody(pub Rc<dyn Fn(&mut Ctx, Args) -> StackVal>);
 
-impl FnDef {
+impl FnBody {
     pub fn eval(&self, ctx: &mut Ctx, args: Args) -> StackVal {
         self.0(ctx, args)
     }
 }
 
-impl std::fmt::Debug for FnDef {
+impl std::fmt::Debug for FnBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("FnDef").finish()
+        f.debug_tuple("FnSig").finish()
     }
 }
 
-impl<F> From<F> for FnDef
+impl<F> From<F> for FnBody
 where
     F: Fn(&mut Ctx, Args) -> StackVal + 'static,
 {
-    fn from(f: F) -> FnDef {
-        FnDef(Rc::new(f))
+    fn from(f: F) -> FnBody {
+        FnBody(Rc::new(f))
     }
 }
 
-impl FnDef {
-    pub fn error(message: String) -> FnDef {
-        FnDef(Rc::new(move |_, _| panic!("{}", message)))
+impl FnBody {
+    #[allow(unused)]
+    pub fn error(message: String) -> FnBody {
+        FnBody(Rc::new(move |_, _| panic!("{}", message)))
     }
+}
+
+#[derive(Debug, Default)]
+pub struct FnDef {
+    pub signatures: FnSignatureMap,
 }
