@@ -214,8 +214,8 @@ pub struct Env {
 }
 
 impl Env {
-    pub fn add_fn_sig(&mut self, name: &str, params: Params, sig: FnBody) {
-        let loc = match self.scopes[0].values.get(name) {
+    pub fn add_fn_sig(&mut self, scope_id: usize, name: &str, params: Params, sig: FnBody) {
+        let loc = match self.scopes[scope_id].values.get(name) {
             None => {
                 let loc = self.heap.len();
 
@@ -237,6 +237,10 @@ impl Env {
             .as_fn_def_mut()
             .signatures
             .insert(params, sig);
+    }
+
+    pub fn add_global_fn_sig(&mut self, name: &str, params: Params, sig: FnBody) {
+        self.add_fn_sig(0, name, params, sig);
     }
 }
 
@@ -280,16 +284,16 @@ impl Ctx {
 
     pub fn call(&mut self, stack_val: StackVal, args: Args) -> Option<StackVal> {
         let StackVal::FnDef { loc } = stack_val else {
-            return None;
+            panic!("stack val is not a fn def");
         };
 
         let HeapVal::FnDef(def) = &self.env.heap[loc] else {
-            return None;
+            panic!("heap val is not a fn def");
         };
 
         let params = args.0.iter().map(|arg| arg.ty()).collect::<Params>();
 
-        let Some(body) = def.signatures.find_best_match(params) else {
+        let Some(body) = def.signatures.find_best_match(params.clone()) else {
             return None;
         };
 
@@ -299,6 +303,31 @@ impl Ctx {
     pub fn call_by_name(&mut self, name: &str, args: Args) -> Option<StackVal> {
         self.get(name)
             .and_then(|stack_val| self.call(stack_val, args))
+    }
+
+    pub fn add_fn_sig(&mut self, name: &str, params: Params, sig: FnBody) {
+        self.env.add_fn_sig(self.current_scope, name, params, sig);
+    }
+
+    pub fn execute_in_fresh_scope<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut Ctx) -> R,
+    {
+        let id = self.env.scopes.len();
+
+        self.env.scopes.push(Scope {
+            parent_scope: Some(self.current_scope),
+            values: Default::default(),
+        });
+
+        let curr = self.current_scope;
+        self.current_scope = id;
+
+        let res = f(self);
+
+        self.current_scope = curr;
+
+        res
     }
 }
 

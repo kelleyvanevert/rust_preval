@@ -4,13 +4,13 @@ use nom::{
     branch::alt,
     bytes::complete::tag,
     character::complete::{alpha1, alphanumeric1, char, multispace0, multispace1, one_of},
-    combinator::{eof, map, opt, recognize},
+    combinator::{eof, map, opt, recognize, value},
     multi::{many0, many0_count, many1},
     sequence::{pair, preceded, terminated, tuple},
     IResult, Parser,
 };
 
-use crate::types::{Args, Ctx, Program, StackVal};
+use crate::types::{Args, Ctx, FnBody, Params, Program, StackVal, Ty};
 
 fn parse_int(s: &str) -> IResult<&str, Program> {
     map(recognize(many1(one_of("0123456789"))), |s: &str| {
@@ -33,6 +33,48 @@ fn parse_var(s: &str) -> IResult<&str, Program> {
         let id = id.to_string();
         Program(Rc::new(move |ctx| ctx.get(&id).unwrap_or(StackVal::Nil)))
     })
+    .parse(s)
+}
+
+fn parse_parameter(s: &str) -> IResult<&str, (&str, Ty)> {
+    pair(
+        parse_identifier,
+        map(
+            opt(preceded(
+                tuple((multispace0, char(':'), multispace0)),
+                parse_type_leaf,
+            )),
+            |ty| ty.unwrap_or(Ty::Any),
+        ),
+    )
+    .parse(s)
+}
+
+fn parse_parameter_list(s: &str) -> IResult<&str, Vec<(&str, Ty)>> {
+    map(
+        tuple((
+            char('('),
+            multispace0,
+            opt(tuple((
+                parse_parameter,
+                many0(map(
+                    tuple((multispace0, char(','), multispace0, parse_parameter)),
+                    |t| t.3,
+                )),
+            ))),
+            multispace0,
+            opt(char(',')),
+            multispace0,
+            char(')'),
+        )),
+        |t| match t.2 {
+            None => vec![],
+            Some((first, mut rest)) => {
+                rest.insert(0, first);
+                rest
+            }
+        },
+    )
     .parse(s)
 }
 
@@ -64,6 +106,53 @@ fn parse_invocation_args(s: &str) -> IResult<&str, Vec<Program>> {
     .parse(s)
 }
 
+fn parse_fn_decl(s: &str) -> IResult<&str, Program> {
+    map(
+        tuple((
+            tag("fn"),
+            multispace1,
+            parse_identifier,
+            multispace0,
+            parse_parameter_list,
+            multispace0,
+            parse_block,
+        )),
+        |(_, _, name, _, parameters, _, body)| {
+            let name = name.to_string();
+            let params = Params::from_iter(parameters.iter().map(|p| p.1.clone()));
+            let param_names = parameters
+                .iter()
+                .map(|p| p.0.to_string())
+                .collect::<Vec<_>>();
+
+            Program(Rc::new(move |ctx| {
+                let param_names = param_names.clone();
+                let body = body.clone();
+
+                ctx.add_fn_sig(
+                    &name,
+                    params.clone(),
+                    FnBody(Rc::new(move |ctx: &mut Ctx, args: Args| {
+                        ctx.execute_in_fresh_scope(|ctx| {
+                            for (i, name) in param_names.iter().enumerate() {
+                                ctx.env.scopes[ctx.current_scope]
+                                    .values
+                                    .insert(name.clone(), args[i]);
+                            }
+
+                            body.eval(ctx)
+                        })
+                    })),
+                );
+
+                StackVal::Nil
+            }))
+        },
+    )
+    .parse(s)
+}
+
+/// TODO parse "items" (i.e. fn decls) first
 fn parse_block(s: &str) -> IResult<&str, Program> {
     map(
         tuple((
@@ -76,6 +165,8 @@ fn parse_block(s: &str) -> IResult<&str, Program> {
                     |t| t.3,
                 )),
             ))),
+            multispace0,
+            opt(char(';')),
             multispace0,
             char('}'),
         )),
@@ -112,6 +203,7 @@ fn parse_expr_parenthesized(s: &str) -> IResult<&str, Program> {
 
 fn parse_expr_leaf(s: &str) -> IResult<&str, Program> {
     alt((
+        parse_fn_decl,
         parse_assign,
         parse_while,
         parse_int,
@@ -380,6 +472,21 @@ fn parse_while(s: &str) -> IResult<&str, Program> {
             }))
         },
     )
+    .parse(s)
+}
+
+fn parse_type_leaf(s: &str) -> IResult<&str, Ty> {
+    alt((
+        value(Ty::Any, tag("any")),
+        value(Ty::Nil, tag("nil")),
+        value(Ty::Bool, tag("bool")),
+        value(Ty::Str, tag("str")),
+        value(Ty::Int, tag("int")),
+        value(Ty::Float, tag("float")),
+        value(Ty::FnDef, tag("fn")),
+        value(Ty::List, tag("list")),
+        value(Ty::Dict, tag("dict")),
+    ))
     .parse(s)
 }
 

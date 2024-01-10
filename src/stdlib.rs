@@ -1,7 +1,7 @@
 use crate::types::*;
 
 pub fn implement_stdlib(env: &mut Env) {
-    env.add_fn_sig(
+    env.add_global_fn_sig(
         "print",
         Params::from_iter([Ty::Any]),
         FnBody::from(|_: &mut _, args: Args| {
@@ -10,7 +10,7 @@ pub fn implement_stdlib(env: &mut Env) {
         }),
     );
 
-    env.add_fn_sig(
+    env.add_global_fn_sig(
         "+",
         Params::from_iter([Ty::Int, Ty::Int]),
         FnBody::from(|_: &mut _, args: Args| {
@@ -18,7 +18,7 @@ pub fn implement_stdlib(env: &mut Env) {
         }),
     );
 
-    env.add_fn_sig(
+    env.add_global_fn_sig(
         "+",
         Params::from_iter([Ty::Float, Ty::Float]),
         FnBody::from(|_: &mut _, args: Args| {
@@ -26,7 +26,7 @@ pub fn implement_stdlib(env: &mut Env) {
         }),
     );
 
-    env.add_fn_sig(
+    env.add_global_fn_sig(
         "+",
         Params::from_iter([Ty::Int, Ty::Float]),
         FnBody::from(|_: &mut _, args: Args| {
@@ -34,7 +34,7 @@ pub fn implement_stdlib(env: &mut Env) {
         }),
     );
 
-    env.add_fn_sig(
+    env.add_global_fn_sig(
         "-",
         Params::from_iter([Ty::Float, Ty::Float]),
         FnBody::from(|_: &mut _, args: Args| {
@@ -42,19 +42,19 @@ pub fn implement_stdlib(env: &mut Env) {
         }),
     );
 
-    env.add_fn_sig(
+    env.add_global_fn_sig(
         "==",
         Params::from_iter([Ty::Any, Ty::Any]),
         FnBody::from(|_: &mut _, args: Args| StackVal::Bool(args[0] == args[1])),
     );
 
-    env.add_fn_sig(
+    env.add_global_fn_sig(
         "!=",
         Params::from_iter([Ty::Int, Ty::Int]),
         FnBody::from(|_: &mut _, args: Args| StackVal::Bool(args[0].as_int() != args[1].as_int())),
     );
 
-    env.add_fn_sig(
+    env.add_global_fn_sig(
         "!=",
         Params::from_iter([Ty::Float, Ty::Float]),
         FnBody::from(|_: &mut _, args: Args| {
@@ -62,7 +62,7 @@ pub fn implement_stdlib(env: &mut Env) {
         }),
     );
 
-    env.add_fn_sig(
+    env.add_global_fn_sig(
         ">",
         Params::from_iter([Ty::Float, Ty::Float]),
         FnBody::from(|_: &mut _, args: Args| {

@@ -32,7 +32,28 @@ fn main() {
     );
     println!(" -> {:?}", r);
 
-    let f = parse_doc("{ i = 3; while i != 0 { print(i); i = i - 1 } }").unwrap();
+    let f = parse_doc(
+        "{
+            fn hi(a: int, b: float) {
+                a + b + 100000
+            };
+
+            fn hi(a: float, b: float) {
+                a + b - 100000
+            };
+
+            i = 3;
+
+            while i != 0 {
+                print(i);
+                print(hi(i, 4));
+                i = i - 1;
+            };
+
+            42
+        }",
+    )
+    .unwrap();
 
     println!("Executing doc...");
     println!(" -> {}", f.eval(&mut ctx));
